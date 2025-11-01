@@ -1,0 +1,17 @@
+torch>=2.0.0
+torch-geometric>=2.3.0
+higher>=0.2.1
+stable-baselines3>=2.0.0
+optuna>=3.0.0
+nni>=2.10
+dowhy>=0.9
+econml>=0.14
+onnxruntime>=1.15.0
+h5py>=3.8.0
+pandas>=2.0.0
+numpy>=1.24.0
+yfinance>=0.2.0
+pyyaml>=6.0
+rich>=13.0.0
+hmmlearn>=0.3.0
+pytest>=7.4.0

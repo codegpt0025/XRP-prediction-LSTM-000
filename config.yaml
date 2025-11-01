@@ -1,0 +1,21 @@
+system:
+  mode: adaptive
+
+brain:
+  encoder_dim: 512
+  attention_heads: 16
+  memory_slots: 256
+  meta_lr: 0.001
+  online_lr: 0.0001
+
+rl:
+  algorithm: ppo
+  gamma: 0.99
+
+nas:
+  frequency: weekly
+  budget: 100
+
+experience:
+  capacity: 100000
+  decay: 0.99
