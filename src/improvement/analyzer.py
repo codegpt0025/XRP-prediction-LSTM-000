@@ -1,5 +1,7 @@
 from typing import List, Dict, Any
 import numpy as np
+import torch
+import torch.nn as nn
 
 class SelfImprovement:
     """
@@ -15,7 +17,7 @@ class SelfImprovement:
         """
         self.model = model
 
-    def analyze_errors(self, predictions: np.ndarray, actuals: np.ndarray) -> Dict[str, Any]:
+    def analyze_performance(self, predictions: np.ndarray, actuals: np.ndarray) -> Dict[str, Any]:
         """
         Analyzes the errors made by the system to identify patterns.
 
@@ -36,6 +38,22 @@ class SelfImprovement:
         }
 
         return insights
+
+    def apply_improvements(self, recent_data, learning_rate=0.001):
+        """
+        Retrains the model on recent data to adapt to new patterns.
+        """
+        # A more advanced implementation would use a more sophisticated online learning algorithm.
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
+        criterion = nn.MSELoss()
+
+        for epoch in range(3): # Train for a few epochs
+            for features, target in recent_data:
+                optimizer.zero_grad()
+                prediction = self.model(features)
+                loss = criterion(prediction['price'], target)
+                loss.backward()
+                optimizer.step()
 
     def ab_test(self, strategy_a, strategy_b, data) -> str:
         """

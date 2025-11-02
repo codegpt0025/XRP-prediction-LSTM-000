@@ -7,20 +7,17 @@ def test_episodic_memory():
     """
     memory = EpisodicMemory(capacity=10)
 
-    # Remember some experiences
+    # Add some experiences
     for i in range(15):
-        memory.remember(
-            state=np.random.rand(10),
-            action=np.random.randint(0, 3),
-            outcome=np.random.rand(),
-            surprise=np.random.rand()
+        memory.add(
+            (np.random.rand(10), np.random.rand())
         )
 
     # Check that the memory has the correct number of episodes
-    assert len(memory.episodes) == 10
+    assert len(memory.memory) == 10
 
-    # Recall some experiences
-    recalled_episodes = memory.recall(current_state=np.random.rand(10), k=5)
+    # Sample some experiences
+    sampled_episodes = memory.sample(5)
 
     # Check that the correct number of episodes were recalled
-    assert len(recalled_episodes) == 5
+    assert len(sampled_episodes) == 5

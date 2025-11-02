@@ -3,6 +3,7 @@ system:
 
 brain:
   encoder_dim: 512
+  dropout_rate: 0.2
   attention_heads: 16
   memory_slots: 256
   meta_lr: 0.001

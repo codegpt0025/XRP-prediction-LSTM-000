@@ -2,13 +2,22 @@ import yaml
 import torch
 import pandas as pd
 import numpy as np
+import time
+import logging
 from typing import Dict, Any
+from sklearn.preprocessing import MinMaxScaler
 
 from src.intelligence.multitask import MultiTaskPredictor
 from src.data.unified_pipeline import DataIntelligence
 from src.experience.episodic import EpisodicMemory
 from src.improvement.analyzer import SelfImprovement
 from src.core.nas import EfficientNAS
+
+# Setup logging
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(levelname)s - %(message)s',
+                    handlers=[logging.FileHandler("live_test.log"),
+                              logging.StreamHandler()])
 
 class EliteSystem:
     """
@@ -18,13 +27,10 @@ class EliteSystem:
     def __init__(self, config_path: str = 'config.yaml'):
         """
         Initializes the EliteSystem.
-
-        Args:
-            config_path (str, optional): The path to the configuration file.
-                                         Defaults to 'config.yaml'.
         """
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
+        logging.info("Configuration loaded.")
 
         # Initialize components
         self.brain = self._build_brain()
@@ -32,6 +38,12 @@ class EliteSystem:
         self.experience = EpisodicMemory(capacity=self.config['experience']['capacity'])
         self.improvement = SelfImprovement(model=self.brain)
         self.nas = EfficientNAS(input_dim=5, output_dim=1)
+        self.scaler = MinMaxScaler()
+        logging.info("System components initialized.")
+
+        # Performance metrics
+        self.correct_predictions = 0
+        self.total_predictions = 0
 
     def _build_brain(self) -> Any:
         """
@@ -40,17 +52,16 @@ class EliteSystem:
         self.input_dim = 5  # O, H, L, C, Vol
         model = MultiTaskPredictor(
             input_dim=self.input_dim,
-            hidden_dim=self.config['brain']['encoder_dim']
+            hidden_dim=self.config['brain']['encoder_dim'],
+            dropout_rate=self.config['brain']['dropout_rate']
         )
         return model
 
-    def _preprocess_data(self, data: pd.DataFrame, seq_len: int = 10) -> torch.Tensor:
+    @staticmethod
+    def _preprocess_data(data: pd.DataFrame, scaler: MinMaxScaler, seq_len: int = 10) -> torch.Tensor:
         """Preprocesses DataFrame into a tensor for the model."""
         features = data[['Open', 'High', 'Low', 'Close', 'Volume']].to_numpy()
-
-        # Simple normalization
-        if features.std(axis=0).all() != 0:
-            features = (features - features.mean(axis=0)) / features.std(axis=0)
+        features = scaler.transform(features)
 
         sequences = []
         for i in range(len(features) - seq_len + 1):
@@ -65,41 +76,95 @@ class EliteSystem:
         """
         Main adaptive learning loop.
         """
+        logging.info("Starting adaptive learning loop.")
+
+        # Fit the scaler on initial data
+        initial_data = self.data.collect(asset='AAPL', lookback='1y')
+        self.scaler.fit(initial_data[['Open', 'High', 'Low', 'Close', 'Volume']].to_numpy())
+
         while True:
-            # 1. Collect new data
-            data = self.data.collect(asset='AAPL', lookback='1mo')
+            start_time = time.time()
+            try:
+                # 1. Collect new data
+                data = self.data.collect(asset='AAPL')
 
-            if len(data) < 10:
-                print("Not enough data to proceed.")
-                break
+                if len(data) < 10:
+                    logging.warning("Not enough data to proceed.")
+                    time.sleep(60)
+                    continue
 
-            # Preprocess data
-            input_tensor = self._preprocess_data(data, seq_len=10)
+                # Get the last closing price for accuracy calculation
+                last_close = data['Close'].iloc[-1]
+                if hasattr(last_close, 'item'):
+                    last_close = last_close.item()
 
-            if input_tensor.nelement() == 0:
-                print("Could not create sequences from data.")
-                break
+                # Preprocess data
+                input_tensor = self._preprocess_data(data, self.scaler, seq_len=10)
 
-            # 2. Make prediction
-            self.brain.eval()
-            with torch.no_grad():
-                predictions = self.brain(input_tensor[-1].unsqueeze(0))
+                if input_tensor.nelement() == 0:
+                    logging.warning("Could not create sequences from data.")
+                    time.sleep(60)
+                    continue
 
-            price_pred = predictions['price'].item()
-            print(f"Predicted Price: {price_pred}")
+                # 2. Make prediction
+                self.brain.eval()
+                with torch.no_grad():
+                    predictions = self.brain(input_tensor[-1].unsqueeze(0))
 
-            # Other components are not yet integrated
-            # 3. RL decision
-            # 4. Wait for actual outcome
-            # 5. Remember experience
-            # 6. Online update
-            # 7. Self-improve
+                price_pred_normalized = predictions['price'].item()
 
-            # 8. Display status
-            self._display_status()
+                # Create a dummy array to inverse transform the prediction
+                dummy_array = np.zeros((1, 5))
+                dummy_array[0, 3] = price_pred_normalized  # Close price is the 4th feature
+                price_pred = self.scaler.inverse_transform(dummy_array)[0, 3]
 
-            # For demonstration, we'll break after one loop.
-            break
+                logging.info(f"Last close: {last_close:.2f}, Predicted next close: {price_pred:.2f}")
+
+                # Wait for a minute to get the actual next price
+                time.sleep(60)
+
+                # 4. Get actual outcome
+                actual_close = self.data.get_live_price(asset='AAPL')
+                if actual_close == 0.0:
+                    logging.warning("Could not retrieve live price. Skipping accuracy calculation.")
+                    continue
+
+                logging.info(f"Actual close: {actual_close:.2f}")
+
+                # 5. Calculate directional accuracy
+                if price_pred > last_close:
+                    predicted_direction = 1
+                elif price_pred < last_close:
+                    predicted_direction = -1
+                else:
+                    predicted_direction = 0
+
+                if actual_close > last_close:
+                    actual_direction = 1
+                elif actual_close < last_close:
+                    actual_direction = -1
+                else:
+                    actual_direction = 0
+
+                if predicted_direction == actual_direction:
+                    self.correct_predictions += 1
+                self.total_predictions += 1
+
+                accuracy = (self.correct_predictions / self.total_predictions) * 100
+                logging.info(f"Directional Accuracy: {accuracy:.2f}% ({self.correct_predictions}/{self.total_predictions})")
+
+                # Self-improvement
+                self.experience.add( (input_tensor[-1], torch.FloatTensor([actual_close])) )
+                if len(self.experience.memory) > 50:
+                    recent_data = self.experience.sample(32)
+                    self.improvement.apply_improvements(recent_data)
+                    logging.info("Applied self-improvement.")
+
+            except Exception as e:
+                logging.error(f"An error occurred: {e}", exc_info=True)
+
+            latency = time.time() - start_time
+            logging.info(f"Loop latency: {latency:.2f} seconds.")
 
     def run_nas(self, budget: int):
         """
