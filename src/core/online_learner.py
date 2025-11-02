@@ -1,70 +1,81 @@
 import torch
-from torch import nn, optim
-from typing import Dict
+from torch import nn
+from torch.utils.data import DataLoader, TensorDataset
+from typing import Dict, List
 
 class OnlineLearner:
     """
-    Handles continuous learning without catastrophic forgetting, using techniques
-    like Elastic Weight Consolidation (EWC).
+    Implements an online learning mechanism using Elastic Weight Consolidation (EWC)
+    to prevent catastrophic forgetting. The learner identifies and protects important
+    parameters learned from past data.
     """
 
-    def __init__(self, model: nn.Module, optimizer: optim.Optimizer, ewc_lambda: float = 0.1):
+    def __init__(self, model: nn.Module, alpha: float = 0.5):
         """
         Initializes the OnlineLearner.
 
         Args:
             model (nn.Module): The model to be trained online.
-            optimizer (optim.Optimizer): The optimizer for the model.
-            ewc_lambda (float, optional): The hyperparameter for EWC. Defaults to 0.1.
+            alpha (float, optional): The weighting factor for the EWC loss. Defaults to 0.5.
         """
         self.model = model
-        self.optimizer = optimizer
-        self.ewc_lambda = ewc_lambda
+        self.alpha = alpha
         self.fisher_information: Dict[str, torch.Tensor] = {}
         self.optimal_params: Dict[str, torch.Tensor] = {}
 
-    def update(self, new_batch):
+    def _compute_fisher_information(self, data: List[torch.Tensor]):
         """
-        Performs an online update on a new batch of data.
+        Computes the Fisher Information Matrix, which estimates the importance of each parameter.
 
         Args:
-            new_batch: The new data batch.
+            data (List[torch.Tensor]): A list of data tensors for Fisher computation.
         """
-        self.model.train()
-        x, y = new_batch
-        y_pred = self.model(x)
-        loss = nn.MSELoss()(y_pred, y)
+        # Create a DataLoader for the provided data
+        dataset = TensorDataset(*data)
+        dataloader = DataLoader(dataset, batch_size=32)
 
-        # Add EWC penalty
+        # Initialize Fisher Information Matrix
+        fisher = {name: torch.zeros_like(param) for name, param in self.model.named_parameters()}
+
+        self.model.train()
+        for batch in dataloader:
+            inputs, targets = batch
+            self.model.zero_grad()
+            outputs = self.model(inputs)
+            # Use a simplified loss for Fisher computation
+            loss = nn.MSELoss()(outputs['price'], targets)
+            loss.backward()
+
+            # Accumulate squared gradients
+            for name, param in self.model.named_parameters():
+                if param.grad is not None:
+                    fisher[name] += param.grad.pow(2)
+
+        # Average the Fisher Information
+        for name in fisher:
+            fisher[name] /= len(dataloader)
+
+        self.fisher_information = fisher
+
+    def consolidate(self, data: List[torch.Tensor]):
+        """
+        Consolidates knowledge by computing and storing the Fisher Information Matrix
+        and the optimal parameters from the current data.
+
+        Args:
+            data (List[torch.Tensor]): The data to consolidate knowledge from.
+        """
+        self._compute_fisher_information(data)
+        self.optimal_params = {name: param.clone().detach() for name, param in self.model.named_parameters()}
+
+    def ewc_loss(self) -> torch.Tensor:
+        """
+        Calculates the EWC loss, which penalizes changes to important parameters.
+        """
+        loss = 0.0
         for name, param in self.model.named_parameters():
             if name in self.fisher_information:
                 fisher = self.fisher_information[name]
-                opt_param = self.optimal_params[name]
-                loss += (fisher * (param - opt_param) ** 2).sum() * self.ewc_lambda
-
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-
-    def consolidate(self, dataset):
-        """
-        Computes the Fisher Information Matrix to identify important parameters.
-        """
-        self.model.eval()
-        # Store current optimal parameters
-        for name, param in self.model.named_parameters():
-            self.optimal_params[name] = param.data.clone()
-
-        # Compute Fisher Information
-        for name, param in self.model.named_parameters():
-            self.fisher_information[name] = torch.zeros_like(param.data)
-
-        for x, y in dataset:
-            self.optimizer.zero_grad()
-            y_pred = self.model(x)
-            loss = nn.MSELoss()(y_pred, y)
-            loss.backward()
-
-            for name, param in self.model.named_parameters():
-                if param.grad is not None:
-                    self.fisher_information[name] += param.grad.data.clone() ** 2 / len(dataset)
+                optimal_param = self.optimal_params[name]
+                loss += (fisher * (param - optimal_param).pow(2)).sum()
+        return self.alpha * loss
